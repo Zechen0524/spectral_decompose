@@ -1007,8 +1007,8 @@ def main():
     
     print(f"\nFiles saved to: {output_dir}")
     print(f"- laplacian_spectral_analysis.png (main comprehensive analysis)")
-    print(f"- residual_analysis.png (NEW: original - frequency bands)")
-    print(f"- evaluation_metrics.png (NEW: comprehensive metrics)")
+    print(f"- residual_analysis.png (UPDATED: proper residual visualization)")
+    print(f"- evaluation_metrics.png (comprehensive metrics)")
     print(f"- frequency_energy_comparison.png")
     print(f"- Individual frequency band comparisons")
     print(f"- Statistical and eigenvalue analyses")
