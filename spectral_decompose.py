@@ -505,9 +505,12 @@ def save_residual_analysis(real_bands, gen_bands, real_gray, gen_gray, output_di
             axes[i, 3].set_title(f'Generated Residual\n(Orig - {band.capitalize()}-Freq)', fontsize=12, fontweight='bold')
             axes[i, 3].axis('off')
     
-    # Add colorbars
-    plt.colorbar(im_real, ax=axes[:, 2], orientation='horizontal', pad=0.1, fraction=0.05)
-    plt.colorbar(im_gen, ax=axes[:, 3], orientation='horizontal', pad=0.1, fraction=0.05)
+    # Add colorbars (check if images were plotted)
+    try:
+        plt.colorbar(im_real, ax=axes[:, 2], orientation='horizontal', pad=0.1, fraction=0.05)
+        plt.colorbar(im_gen, ax=axes[:, 3], orientation='horizontal', pad=0.1, fraction=0.05)
+    except:
+        pass  # Skip colorbars if images weren't plotted properly
     
     plt.suptitle('Residual Analysis: Original Image - Frequency Bands', fontsize=16, fontweight='bold')
     plt.tight_layout()
@@ -576,12 +579,28 @@ def calculate_frequency_evaluation_metrics(real_bands, gen_bands, real_gray, gen
             real_residual = real_bands[band]['residual']
             gen_residual = gen_bands[band]['residual']
             
-            # Residual correlation
-            real_flat = real_residual.flatten()
-            gen_flat = gen_residual.flatten()
-            band_metrics['residual_correlation'] = np.corrcoef(real_flat, gen_flat)[0, 1]
+            # Resize residuals to common size for correlation calculation
+            common_size = min(real_residual.shape[0], gen_residual.shape[0])
+            real_residual_resized = cv2.resize(real_residual, (common_size, common_size))
+            gen_residual_resized = cv2.resize(gen_residual, (common_size, common_size))
             
-            # Residual energy (how much information is lost)
+            # Residual correlation
+            real_flat = real_residual_resized.flatten()
+            gen_flat = gen_residual_resized.flatten()
+            
+            # Handle potential NaN values in correlation
+            if (len(real_flat) > 0 and len(gen_flat) > 0 and 
+                np.std(real_flat) > 1e-10 and np.std(gen_flat) > 1e-10 and
+                not np.any(np.isnan(real_flat)) and not np.any(np.isnan(gen_flat))):
+                try:
+                    correlation = np.corrcoef(real_flat, gen_flat)[0, 1]
+                    band_metrics['residual_correlation'] = correlation if not np.isnan(correlation) else 0.0
+                except:
+                    band_metrics['residual_correlation'] = 0.0
+            else:
+                band_metrics['residual_correlation'] = 0.0
+            
+            # Residual energy (how much information is lost) - use original sizes
             band_metrics['real_residual_energy'] = np.mean(real_residual**2)
             band_metrics['gen_residual_energy'] = np.mean(gen_residual**2)
             band_metrics['residual_energy_ratio'] = band_metrics['gen_residual_energy'] / band_metrics['real_residual_energy'] if band_metrics['real_residual_energy'] > 0 else float('inf')
