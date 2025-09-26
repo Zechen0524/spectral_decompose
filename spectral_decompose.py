@@ -510,8 +510,8 @@ def save_residual_analysis(real_bands, gen_bands, real_full_recon, gen_full_reco
     bands = ['low', 'mid', 'high']
     band_colors = ['blue', 'orange', 'red']
     
-    # Create comprehensive residual visualization - 4 columns
-    fig, axes = plt.subplots(3, 4, figsize=(20, 15))
+    # Create comprehensive residual visualization - 6 columns
+    fig, axes = plt.subplots(3, 6, figsize=(30, 15))
     
     for i, (band, color) in enumerate(zip(bands, band_colors)):
         # Column 1: Real Full Reconstruction
@@ -524,17 +524,27 @@ def save_residual_analysis(real_bands, gen_bands, real_full_recon, gen_full_reco
         axes[i, 1].set_title(f'Real WITHOUT\n{band.capitalize()}-Freq', fontsize=12, fontweight='bold', color=color)
         axes[i, 1].axis('off')
         
-        # Column 3: Generated Full Reconstruction
-        axes[i, 2].imshow(gen_full_recon, cmap='gray')
-        axes[i, 2].set_title(f'Generated Full\nReconstruction', fontsize=12, fontweight='bold')
+        # Column 3: Real ONLY this frequency band
+        axes[i, 2].imshow(real_bands[band]['reconstruction'], cmap='gray')
+        axes[i, 2].set_title(f'Real ONLY\n{band.capitalize()}-Freq', fontsize=12, fontweight='bold', color=color)
         axes[i, 2].axis('off')
         
-        # Column 4: Generated WITHOUT this frequency band
-        axes[i, 3].imshow(gen_bands[band]['residual_image'], cmap='gray')
-        axes[i, 3].set_title(f'Generated WITHOUT\n{band.capitalize()}-Freq', fontsize=12, fontweight='bold', color=color)
+        # Column 4: Generated Full Reconstruction
+        axes[i, 3].imshow(gen_full_recon, cmap='gray')
+        axes[i, 3].set_title(f'Generated Full\nReconstruction', fontsize=12, fontweight='bold')
         axes[i, 3].axis('off')
+        
+        # Column 5: Generated WITHOUT this frequency band
+        axes[i, 4].imshow(gen_bands[band]['residual_image'], cmap='gray')
+        axes[i, 4].set_title(f'Generated WITHOUT\n{band.capitalize()}-Freq', fontsize=12, fontweight='bold', color=color)
+        axes[i, 4].axis('off')
+        
+        # Column 6: Generated ONLY this frequency band
+        axes[i, 5].imshow(gen_bands[band]['reconstruction'], cmap='gray')
+        axes[i, 5].set_title(f'Generated ONLY\n{band.capitalize()}-Freq', fontsize=12, fontweight='bold', color=color)
+        axes[i, 5].axis('off')
     
-    plt.suptitle('Residual Analysis: What Remains When Each Frequency Band is Removed', fontsize=16, fontweight='bold')
+    plt.suptitle('Complete Frequency Band Analysis: Full, Without, and Only Each Band', fontsize=16, fontweight='bold')
     plt.tight_layout()
     
     residual_path = os.path.join(output_dir, 'residual_analysis.png')
