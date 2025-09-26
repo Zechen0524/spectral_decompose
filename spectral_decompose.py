@@ -48,7 +48,7 @@ def load_precomputed_eigendata(eig_path):
     
     return eigenvals, eigenvecs
 
-def analyze_frequency_bands(eigenvals, eigenvecs, image_shape, patch_grid, n_bands=3):
+def analyze_frequency_bands(eigenvals, eigenvecs, image_shape, patch_grid, original_image=None, n_bands=3):
     """Analyze different frequency bands"""
     n_components = len(eigenvals)  # Number of eigenvectors (50)
     n_patches = eigenvecs.shape[1]  # Number of patches is the SECOND dimension (1024 or 961)
@@ -132,11 +132,20 @@ def analyze_frequency_bands(eigenvals, eigenvecs, image_shape, patch_grid, n_ban
         if reconstruction.shape != image_shape:
             reconstruction = cv2.resize(reconstruction, (image_shape[1], image_shape[0]))
         
+        # Calculate residual (original - frequency band) if original image provided
+        residual = None
+        if original_image is not None:
+            # Ensure both images are same shape and normalized
+            orig_normalized = (original_image - original_image.mean()) / (original_image.std() + 1e-8)
+            recon_normalized = (reconstruction - reconstruction.mean()) / (reconstruction.std() + 1e-8)
+            residual = orig_normalized - recon_normalized
+        
         band_analysis[band_name] = {
             'eigenvals': band_eigenvals,
             'eigenvecs': band_eigenvecs,
             'energy': energy,
             'reconstruction': reconstruction,
+            'residual': residual,
             'reconstruction_patches': reconstruction_patches,
             'patch_grid': patch_grid,
             'mean_eigenval': np.mean(band_eigenvals),
@@ -459,6 +468,228 @@ def save_statistical_analysis(real_bands, gen_bands, reconstruction_errors, outp
     plt.close()
     print(f"Statistical analysis saved to: {stats_path}")
 
+def save_residual_analysis(real_bands, gen_bands, real_gray, gen_gray, output_dir='/home/zechenli/DinoV3/TestImages'):
+    """Save residual analysis (original - frequency bands) for real and generated images"""
+    import os
+    
+    bands = ['low', 'mid', 'high']
+    band_colors = ['blue', 'orange', 'red']
+    
+    # Create comprehensive residual visualization
+    fig, axes = plt.subplots(3, 4, figsize=(20, 15))
+    
+    for i, (band, color) in enumerate(zip(bands, band_colors)):
+        # Real image residuals
+        if real_bands[band]['residual'] is not None:
+            # Original real image
+            axes[i, 0].imshow(real_gray, cmap='gray')
+            axes[i, 0].set_title(f'Real Image (Original)', fontsize=12, fontweight='bold')
+            axes[i, 0].axis('off')
+            
+            # Real frequency band reconstruction
+            axes[i, 1].imshow(real_bands[band]['reconstruction'], cmap='gray')
+            axes[i, 1].set_title(f'Real {band.capitalize()}-Freq', fontsize=12, fontweight='bold', color=color)
+            axes[i, 1].axis('off')
+            
+            # Real residual (original - frequency band)
+            residual_real = real_bands[band]['residual']
+            im_real = axes[i, 2].imshow(residual_real, cmap='RdBu_r', vmin=-2, vmax=2)
+            axes[i, 2].set_title(f'Real Residual\n(Orig - {band.capitalize()}-Freq)', fontsize=12, fontweight='bold')
+            axes[i, 2].axis('off')
+            
+        # Generated image residuals
+        if gen_bands[band]['residual'] is not None:
+            # Generated residual (original - frequency band)
+            residual_gen = gen_bands[band]['residual']
+            im_gen = axes[i, 3].imshow(residual_gen, cmap='RdBu_r', vmin=-2, vmax=2)
+            axes[i, 3].set_title(f'Generated Residual\n(Orig - {band.capitalize()}-Freq)', fontsize=12, fontweight='bold')
+            axes[i, 3].axis('off')
+    
+    # Add colorbars
+    plt.colorbar(im_real, ax=axes[:, 2], orientation='horizontal', pad=0.1, fraction=0.05)
+    plt.colorbar(im_gen, ax=axes[:, 3], orientation='horizontal', pad=0.1, fraction=0.05)
+    
+    plt.suptitle('Residual Analysis: Original Image - Frequency Bands', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    
+    residual_path = os.path.join(output_dir, 'residual_analysis.png')
+    plt.savefig(residual_path, dpi=300, bbox_inches='tight', facecolor='white')
+    plt.close()
+    print(f"Residual analysis saved to: {residual_path}")
+
+def calculate_frequency_evaluation_metrics(real_bands, gen_bands, real_gray, gen_gray):
+    """Calculate comprehensive evaluation metrics for frequency differences"""
+    
+    metrics = {}
+    bands = ['low', 'mid', 'high']
+    
+    for band in bands:
+        band_metrics = {}
+        
+        # 1. Reconstruction similarity metrics
+        real_recon = real_bands[band]['reconstruction']
+        gen_recon = gen_bands[band]['reconstruction']
+        
+        # Resize to common size for fair comparison
+        common_size = min(real_recon.shape[0], gen_recon.shape[0])
+        real_recon_resized = cv2.resize(real_recon, (common_size, common_size))
+        gen_recon_resized = cv2.resize(gen_recon, (common_size, common_size))
+        
+        # Normalize for fair comparison
+        real_norm = (real_recon_resized - real_recon_resized.mean()) / (real_recon_resized.std() + 1e-8)
+        gen_norm = (gen_recon_resized - gen_recon_resized.mean()) / (gen_recon_resized.std() + 1e-8)
+        
+        # Mean Squared Error
+        band_metrics['mse'] = np.mean((real_norm - gen_norm)**2)
+        
+        # Structural Similarity Index (SSIM)
+        from skimage.metrics import structural_similarity as ssim
+        band_metrics['ssim'] = ssim(real_norm, gen_norm, data_range=real_norm.max() - real_norm.min())
+        
+        # Peak Signal-to-Noise Ratio (PSNR)
+        mse_for_psnr = np.mean((real_norm - gen_norm)**2)
+        if mse_for_psnr > 0:
+            band_metrics['psnr'] = 20 * np.log10(4.0 / np.sqrt(mse_for_psnr))  # 4.0 is range after normalization
+        else:
+            band_metrics['psnr'] = float('inf')
+        
+        # 2. Eigenvalue distribution differences
+        real_eigenvals = real_bands[band]['eigenvals']
+        gen_eigenvals = gen_bands[band]['eigenvals']
+        
+        # Kolmogorov-Smirnov test for distribution similarity
+        from scipy.stats import ks_2samp
+        ks_stat, ks_pvalue = ks_2samp(real_eigenvals, gen_eigenvals)
+        band_metrics['ks_statistic'] = ks_stat
+        band_metrics['ks_pvalue'] = ks_pvalue
+        
+        # Energy ratio
+        real_energy = real_bands[band]['energy']
+        gen_energy = gen_bands[band]['energy']
+        band_metrics['energy_ratio'] = gen_energy / real_energy if real_energy > 0 else float('inf')
+        
+        # Mean eigenvalue difference
+        band_metrics['mean_eigenval_diff'] = np.abs(np.mean(gen_eigenvals) - np.mean(real_eigenvals))
+        
+        # 3. Residual analysis metrics
+        if real_bands[band]['residual'] is not None and gen_bands[band]['residual'] is not None:
+            real_residual = real_bands[band]['residual']
+            gen_residual = gen_bands[band]['residual']
+            
+            # Residual correlation
+            real_flat = real_residual.flatten()
+            gen_flat = gen_residual.flatten()
+            band_metrics['residual_correlation'] = np.corrcoef(real_flat, gen_flat)[0, 1]
+            
+            # Residual energy (how much information is lost)
+            band_metrics['real_residual_energy'] = np.mean(real_residual**2)
+            band_metrics['gen_residual_energy'] = np.mean(gen_residual**2)
+            band_metrics['residual_energy_ratio'] = band_metrics['gen_residual_energy'] / band_metrics['real_residual_energy'] if band_metrics['real_residual_energy'] > 0 else float('inf')
+        
+        metrics[band] = band_metrics
+    
+    # Overall metrics
+    overall_metrics = {}
+    
+    # Which frequency band has the largest difference?
+    mse_values = [metrics[band]['mse'] for band in bands]
+    max_diff_band = bands[np.argmax(mse_values)]
+    overall_metrics['max_difference_band'] = max_diff_band
+    overall_metrics['max_difference_mse'] = max(mse_values)
+    
+    # Average SSIM across all bands
+    ssim_values = [metrics[band]['ssim'] for band in bands]
+    overall_metrics['average_ssim'] = np.mean(ssim_values)
+    
+    # Energy distribution similarity
+    real_energies = [real_bands[band]['energy'] for band in bands]
+    gen_energies = [gen_bands[band]['energy'] for band in bands]
+    real_energy_dist = np.array(real_energies) / np.sum(real_energies)
+    gen_energy_dist = np.array(gen_energies) / np.sum(gen_energies)
+    overall_metrics['energy_distribution_mse'] = np.mean((real_energy_dist - gen_energy_dist)**2)
+    
+    metrics['overall'] = overall_metrics
+    
+    return metrics
+
+def save_evaluation_metrics_plot(metrics, output_dir='/home/zechenli/DinoV3/TestImages'):
+    """Save comprehensive evaluation metrics visualization"""
+    import os
+    
+    bands = ['low', 'mid', 'high']
+    band_colors = ['blue', 'orange', 'red']
+    
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    
+    # 1. MSE comparison
+    mse_values = [metrics[band]['mse'] for band in bands]
+    bars1 = axes[0, 0].bar(bands, mse_values, color=band_colors, alpha=0.7)
+    axes[0, 0].set_title('Mean Squared Error\nby Frequency Band', fontsize=14, fontweight='bold')
+    axes[0, 0].set_ylabel('MSE')
+    axes[0, 0].grid(True, alpha=0.3)
+    
+    # Highlight max difference
+    max_idx = np.argmax(mse_values)
+    bars1[max_idx].set_edgecolor('black')
+    bars1[max_idx].set_linewidth(3)
+    
+    # 2. SSIM comparison
+    ssim_values = [metrics[band]['ssim'] for band in bands]
+    bars2 = axes[0, 1].bar(bands, ssim_values, color=band_colors, alpha=0.7)
+    axes[0, 1].set_title('Structural Similarity (SSIM)\nby Frequency Band', fontsize=14, fontweight='bold')
+    axes[0, 1].set_ylabel('SSIM')
+    axes[0, 1].set_ylim(0, 1)
+    axes[0, 1].grid(True, alpha=0.3)
+    
+    # 3. PSNR comparison
+    psnr_values = [metrics[band]['psnr'] for band in bands]
+    psnr_values = [min(p, 50) for p in psnr_values]  # Cap for visualization
+    bars3 = axes[0, 2].bar(bands, psnr_values, color=band_colors, alpha=0.7)
+    axes[0, 2].set_title('Peak Signal-to-Noise Ratio\nby Frequency Band', fontsize=14, fontweight='bold')
+    axes[0, 2].set_ylabel('PSNR (dB)')
+    axes[0, 2].grid(True, alpha=0.3)
+    
+    # 4. Energy ratios
+    energy_ratios = [metrics[band]['energy_ratio'] for band in bands]
+    bars4 = axes[1, 0].bar(bands, energy_ratios, color=band_colors, alpha=0.7)
+    axes[1, 0].axhline(y=1.0, color='black', linestyle='--', alpha=0.7, label='Equal Energy')
+    axes[1, 0].set_title('Energy Ratio\n(Generated/Real)', fontsize=14, fontweight='bold')
+    axes[1, 0].set_ylabel('Energy Ratio')
+    axes[1, 0].legend()
+    axes[1, 0].grid(True, alpha=0.3)
+    
+    # 5. KS test statistics
+    ks_stats = [metrics[band]['ks_statistic'] for band in bands]
+    bars5 = axes[1, 1].bar(bands, ks_stats, color=band_colors, alpha=0.7)
+    axes[1, 1].set_title('Kolmogorov-Smirnov Statistic\n(Eigenvalue Distribution)', fontsize=14, fontweight='bold')
+    axes[1, 1].set_ylabel('KS Statistic')
+    axes[1, 1].grid(True, alpha=0.3)
+    
+    # 6. Residual energy comparison
+    if 'real_residual_energy' in metrics['low']:
+        real_residual_energies = [metrics[band]['real_residual_energy'] for band in bands]
+        gen_residual_energies = [metrics[band]['gen_residual_energy'] for band in bands]
+        
+        x = np.arange(len(bands))
+        width = 0.35
+        
+        axes[1, 2].bar(x - width/2, real_residual_energies, width, label='Real', color='blue', alpha=0.7)
+        axes[1, 2].bar(x + width/2, gen_residual_energies, width, label='Generated', color='red', alpha=0.7)
+        axes[1, 2].set_title('Residual Energy\n(Information Loss)', fontsize=14, fontweight='bold')
+        axes[1, 2].set_ylabel('Residual Energy')
+        axes[1, 2].set_xticks(x)
+        axes[1, 2].set_xticklabels(bands)
+        axes[1, 2].legend()
+        axes[1, 2].grid(True, alpha=0.3)
+    
+    plt.suptitle('Comprehensive Frequency Evaluation Metrics', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    
+    metrics_path = os.path.join(output_dir, 'evaluation_metrics.png')
+    plt.savefig(metrics_path, dpi=300, bbox_inches='tight', facecolor='white')
+    plt.close()
+    print(f"Evaluation metrics plot saved to: {metrics_path}")
+
 def save_frequency_energy_plot(real_eigenvals, gen_eigenvals, output_dir='/home/zechenli/DinoV3/TestImages'):
     """Save frequency vs spectral energy plot for real and generated images"""
     import os
@@ -596,9 +827,9 @@ def main():
     
     print("Analyzing frequency bands...")
     
-    # Analyze frequency bands with correct patch grids
-    real_bands = analyze_frequency_bands(real_eigenvals, real_eigenvecs, real_gray.shape, real_patch_grid)
-    gen_bands = analyze_frequency_bands(gen_eigenvals, gen_eigenvecs, gen_gray.shape, gen_patch_grid)
+    # Analyze frequency bands with correct patch grids and original images for residual analysis
+    real_bands = analyze_frequency_bands(real_eigenvals, real_eigenvecs, real_gray.shape, real_patch_grid, original_image=real_gray)
+    gen_bands = analyze_frequency_bands(gen_eigenvals, gen_eigenvecs, gen_gray.shape, gen_patch_grid, original_image=gen_gray)
     
     print("Creating and saving visualizations...")
     
@@ -607,11 +838,19 @@ def main():
                                        real_eigenvals, gen_eigenvals,
                                        real_bands, gen_bands)
     
+    # Calculate evaluation metrics
+    print("Calculating evaluation metrics...")
+    metrics = calculate_frequency_evaluation_metrics(real_bands, gen_bands, real_gray, gen_gray)
+    
     # Save additional detailed analyses
     save_individual_reconstructions(real_bands, gen_bands, output_dir)
     save_eigenvalue_analysis(real_eigenvals, gen_eigenvals, output_dir)
     save_statistical_analysis(real_bands, gen_bands, errors, output_dir)
     save_frequency_energy_plot(real_eigenvals, gen_eigenvals, output_dir)
+    
+    # Save new residual and evaluation visualizations
+    save_residual_analysis(real_bands, gen_bands, real_gray, gen_gray, output_dir)
+    save_evaluation_metrics_plot(metrics, output_dir)
     
     # Print quantitative analysis
     print("\n" + "="*60)
@@ -653,6 +892,80 @@ def main():
     print(f"\nTotal number of eigenvalues processed:")
     print(f"Real: {len(real_eigenvals)}")
     print(f"Generated: {len(gen_eigenvals)}")
+    
+    # Print comprehensive evaluation metrics
+    print("\n" + "="*60)
+    print("COMPREHENSIVE EVALUATION METRICS")
+    print("="*60)
+    
+    print(f"\nOverall Analysis:")
+    print(f"Band with maximum difference: {metrics['overall']['max_difference_band']}")
+    print(f"Maximum difference MSE: {metrics['overall']['max_difference_mse']:.6f}")
+    print(f"Average SSIM across all bands: {metrics['overall']['average_ssim']:.4f}")
+    print(f"Energy distribution MSE: {metrics['overall']['energy_distribution_mse']:.6f}")
+    
+    print(f"\nDetailed Metrics by Frequency Band:")
+    bands = ['low', 'mid', 'high']
+    for band in bands:
+        print(f"\n{band.upper()}-FREQUENCY BAND:")
+        print(f"  MSE: {metrics[band]['mse']:.6f}")
+        print(f"  SSIM: {metrics[band]['ssim']:.4f}")
+        print(f"  PSNR: {metrics[band]['psnr']:.2f} dB")
+        print(f"  Energy Ratio (Gen/Real): {metrics[band]['energy_ratio']:.4f}")
+        print(f"  KS Statistic: {metrics[band]['ks_statistic']:.4f}")
+        print(f"  KS p-value: {metrics[band]['ks_pvalue']:.6f}")
+        print(f"  Mean Eigenvalue Difference: {metrics[band]['mean_eigenval_diff']:.6f}")
+        
+        if 'residual_correlation' in metrics[band]:
+            print(f"  Residual Correlation: {metrics[band]['residual_correlation']:.4f}")
+            print(f"  Real Residual Energy: {metrics[band]['real_residual_energy']:.6f}")
+            print(f"  Generated Residual Energy: {metrics[band]['gen_residual_energy']:.6f}")
+            print(f"  Residual Energy Ratio: {metrics[band]['residual_energy_ratio']:.4f}")
+    
+    # Analysis summary
+    print(f"\n" + "="*60)
+    print("ANALYSIS SUMMARY")
+    print("="*60)
+    
+    # Check which metrics support the mid-frequency hypothesis
+    mse_values = [metrics[band]['mse'] for band in bands]
+    ssim_values = [metrics[band]['ssim'] for band in bands]
+    
+    max_mse_band = bands[np.argmax(mse_values)]
+    min_ssim_band = bands[np.argmin(ssim_values)]
+    
+    if max_mse_band == 'mid':
+        print(f"✓ MSE ANALYSIS: Mid-frequency shows highest MSE ({metrics['mid']['mse']:.6f})")
+        print(f"  Supporting the hypothesis that diffusion models struggle with mid-frequency patterns.")
+    else:
+        print(f"⚠ MSE ANALYSIS: {max_mse_band}-frequency shows highest MSE ({max(mse_values):.6f})")
+    
+    if min_ssim_band == 'mid':
+        print(f"✓ SSIM ANALYSIS: Mid-frequency shows lowest SSIM ({metrics['mid']['ssim']:.4f})")
+        print(f"  Supporting the hypothesis that diffusion models struggle with mid-frequency patterns.")
+    else:
+        print(f"⚠ SSIM ANALYSIS: {min_ssim_band}-frequency shows lowest SSIM ({min(ssim_values):.4f})")
+    
+    # Energy distribution analysis
+    energy_ratios = [metrics[band]['energy_ratio'] for band in bands]
+    energy_deviations = [abs(ratio - 1.0) for ratio in energy_ratios]
+    max_energy_dev_band = bands[np.argmax(energy_deviations)]
+    
+    print(f"\nENERGY DISTRIBUTION:")
+    for i, band in enumerate(bands):
+        deviation = abs(energy_ratios[i] - 1.0)
+        print(f"  {band.capitalize()}-freq energy ratio: {energy_ratios[i]:.4f} (deviation from 1.0: {deviation:.4f})")
+    
+    if max_energy_dev_band == 'mid':
+        print(f"✓ Mid-frequency shows largest energy distribution difference")
+    
+    print(f"\nFiles saved to: {output_dir}")
+    print(f"- laplacian_spectral_analysis.png (main comprehensive analysis)")
+    print(f"- residual_analysis.png (NEW: original - frequency bands)")
+    print(f"- evaluation_metrics.png (NEW: comprehensive metrics)")
+    print(f"- frequency_energy_comparison.png")
+    print(f"- Individual frequency band comparisons")
+    print(f"- Statistical and eigenvalue analyses")
 
 if __name__ == "__main__":
     main()
