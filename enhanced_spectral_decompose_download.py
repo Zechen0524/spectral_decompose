@@ -93,31 +93,6 @@ def analyze_frequency_bands(eigenvals, eigenvecs, image_shape, patch_grid, origi
         'high': (2 * band_size, n_components)
     }
     
-    # First, compute full reconstruction from all bands
-    full_reconstruction_patches = np.zeros(n_patches)
-    for i in range(n_components):
-        full_reconstruction_patches += eigenvals[i] * eigenvecs[i, :]
-    
-    # Reshape full reconstruction to image size
-    try:
-        full_reconstruction_grid = full_reconstruction_patches.reshape(patch_grid)
-    except ValueError as e:
-        print(f"Reshape error for full reconstruction: {e}")
-        target_size = patch_grid[0] * patch_grid[1]
-        if n_patches > target_size:
-            full_reconstruction_patches = full_reconstruction_patches[:target_size]
-        else:
-            full_reconstruction_patches = np.pad(full_reconstruction_patches, (0, target_size - n_patches), 'constant')
-        full_reconstruction_grid = full_reconstruction_patches.reshape(patch_grid)
-    
-    # Interpolate full reconstruction to image size
-    scale_h = image_shape[0] / patch_grid[0]
-    scale_w = image_shape[1] / patch_grid[1]
-    full_reconstruction = zoom(full_reconstruction_grid, (scale_h, scale_w), order=1)
-    
-    if full_reconstruction.shape != image_shape:
-        full_reconstruction = cv2.resize(full_reconstruction, (image_shape[1], image_shape[0]))
-    
     band_analysis = {}
     
     for band_name, (start, end) in bands.items():
@@ -157,37 +132,27 @@ def analyze_frequency_bands(eigenvals, eigenvecs, image_shape, patch_grid, origi
         if reconstruction.shape != image_shape:
             reconstruction = cv2.resize(reconstruction, (image_shape[1], image_shape[0]))
         
-        # Calculate what remains when this frequency band is REMOVED
-        # residual = full_reconstruction - this_band_reconstruction
-        residual_image = full_reconstruction - reconstruction
-        
-        # Normalize residual image to [0, 1] range for proper visualization
-        residual_image_normalized = residual_image.copy()
-        residual_min, residual_max = residual_image_normalized.min(), residual_image_normalized.max()
-        if residual_max > residual_min:
-            residual_image_normalized = (residual_image_normalized - residual_min) / (residual_max - residual_min)
-        else:
-            residual_image_normalized = np.zeros_like(residual_image_normalized)
+        # Calculate residual (original - frequency band) if original image provided
+        residual = None
+        if original_image is not None:
+            # Ensure both images are same shape and normalized
+            orig_normalized = (original_image - original_image.mean()) / (original_image.std() + 1e-8)
+            recon_normalized = (reconstruction - reconstruction.mean()) / (reconstruction.std() + 1e-8)
+            residual = orig_normalized - recon_normalized
         
         band_analysis[band_name] = {
             'eigenvals': band_eigenvals,
             'eigenvecs': band_eigenvecs,
             'energy': energy,
             'reconstruction': reconstruction,
-            'residual_image': residual_image_normalized,  # What remains when this band is removed
+            'residual': residual,
             'reconstruction_patches': reconstruction_patches,
             'patch_grid': patch_grid,
             'mean_eigenval': np.mean(band_eigenvals),
             'std_eigenval': np.std(band_eigenvals)
         }
     
-    # Add full reconstruction to the analysis
-    full_recon_normalized = full_reconstruction.copy()
-    full_min, full_max = full_recon_normalized.min(), full_recon_normalized.max()
-    if full_max > full_min:
-        full_recon_normalized = (full_recon_normalized - full_min) / (full_max - full_min)
-    
-    return band_analysis, full_recon_normalized
+    return band_analysis
 
 def visualize_spectral_analysis(real_img, gen_img, real_gray, gen_gray, 
                                real_eigenvals, gen_eigenvals, 
@@ -503,48 +468,51 @@ def save_statistical_analysis(real_bands, gen_bands, reconstruction_errors, outp
     plt.close()
     print(f"Statistical analysis saved to: {stats_path}")
 
-def save_residual_analysis(real_bands, gen_bands, real_full_recon, gen_full_recon, output_dir='/home/zechenli/DinoV3/TestImages'):
-    """Save residual analysis showing what remains when each frequency band is removed"""
+def save_residual_analysis(real_bands, gen_bands, real_gray, gen_gray, output_dir='/home/zechenli/DinoV3/TestImages'):
+    """Save residual analysis (original - frequency bands) for real and generated images"""
     import os
     
     bands = ['low', 'mid', 'high']
     band_colors = ['blue', 'orange', 'red']
     
-    # Create comprehensive residual visualization - 6 columns
-    fig, axes = plt.subplots(3, 6, figsize=(30, 15))
+    # Create comprehensive residual visualization
+    fig, axes = plt.subplots(3, 4, figsize=(20, 15))
     
     for i, (band, color) in enumerate(zip(bands, band_colors)):
-        # Column 1: Real Full Reconstruction
-        axes[i, 0].imshow(real_full_recon, cmap='gray')
-        axes[i, 0].set_title(f'Real Full\nReconstruction', fontsize=12, fontweight='bold')
-        axes[i, 0].axis('off')
-        
-        # Column 2: Real WITHOUT this frequency band 
-        axes[i, 1].imshow(real_bands[band]['residual_image'], cmap='gray')
-        axes[i, 1].set_title(f'Real WITHOUT\n{band.capitalize()}-Freq', fontsize=12, fontweight='bold', color=color)
-        axes[i, 1].axis('off')
-        
-        # Column 3: Real ONLY this frequency band
-        axes[i, 2].imshow(real_bands[band]['reconstruction'], cmap='gray')
-        axes[i, 2].set_title(f'Real ONLY\n{band.capitalize()}-Freq', fontsize=12, fontweight='bold', color=color)
-        axes[i, 2].axis('off')
-        
-        # Column 4: Generated Full Reconstruction
-        axes[i, 3].imshow(gen_full_recon, cmap='gray')
-        axes[i, 3].set_title(f'Generated Full\nReconstruction', fontsize=12, fontweight='bold')
-        axes[i, 3].axis('off')
-        
-        # Column 5: Generated WITHOUT this frequency band
-        axes[i, 4].imshow(gen_bands[band]['residual_image'], cmap='gray')
-        axes[i, 4].set_title(f'Generated WITHOUT\n{band.capitalize()}-Freq', fontsize=12, fontweight='bold', color=color)
-        axes[i, 4].axis('off')
-        
-        # Column 6: Generated ONLY this frequency band
-        axes[i, 5].imshow(gen_bands[band]['reconstruction'], cmap='gray')
-        axes[i, 5].set_title(f'Generated ONLY\n{band.capitalize()}-Freq', fontsize=12, fontweight='bold', color=color)
-        axes[i, 5].axis('off')
+        # Real image residuals
+        if real_bands[band]['residual'] is not None:
+            # Original real image
+            axes[i, 0].imshow(real_gray, cmap='gray')
+            axes[i, 0].set_title(f'Real Image (Original)', fontsize=12, fontweight='bold')
+            axes[i, 0].axis('off')
+            
+            # Real frequency band reconstruction
+            axes[i, 1].imshow(real_bands[band]['reconstruction'], cmap='gray')
+            axes[i, 1].set_title(f'Real {band.capitalize()}-Freq', fontsize=12, fontweight='bold', color=color)
+            axes[i, 1].axis('off')
+            
+            # Real residual (original - frequency band)
+            residual_real = real_bands[band]['residual']
+            im_real = axes[i, 2].imshow(residual_real, cmap='RdBu_r', vmin=-2, vmax=2)
+            axes[i, 2].set_title(f'Real Residual\n(Orig - {band.capitalize()}-Freq)', fontsize=12, fontweight='bold')
+            axes[i, 2].axis('off')
+            
+        # Generated image residuals
+        if gen_bands[band]['residual'] is not None:
+            # Generated residual (original - frequency band)
+            residual_gen = gen_bands[band]['residual']
+            im_gen = axes[i, 3].imshow(residual_gen, cmap='RdBu_r', vmin=-2, vmax=2)
+            axes[i, 3].set_title(f'Generated Residual\n(Orig - {band.capitalize()}-Freq)', fontsize=12, fontweight='bold')
+            axes[i, 3].axis('off')
     
-    plt.suptitle('Complete Frequency Band Analysis: Full, Without, and Only Each Band', fontsize=16, fontweight='bold')
+    # Add colorbars (check if images were plotted)
+    try:
+        plt.colorbar(im_real, ax=axes[:, 2], orientation='horizontal', pad=0.1, fraction=0.05)
+        plt.colorbar(im_gen, ax=axes[:, 3], orientation='horizontal', pad=0.1, fraction=0.05)
+    except:
+        pass  # Skip colorbars if images weren't plotted properly
+    
+    plt.suptitle('Residual Analysis: Original Image - Frequency Bands', fontsize=16, fontweight='bold')
     plt.tight_layout()
     
     residual_path = os.path.join(output_dir, 'residual_analysis.png')
@@ -607,9 +575,9 @@ def calculate_frequency_evaluation_metrics(real_bands, gen_bands, real_gray, gen
         band_metrics['mean_eigenval_diff'] = np.abs(np.mean(gen_eigenvals) - np.mean(real_eigenvals))
         
         # 3. Residual analysis metrics
-        if 'residual_image' in real_bands[band] and 'residual_image' in gen_bands[band]:
-            real_residual = real_bands[band]['residual_image']
-            gen_residual = gen_bands[band]['residual_image']
+        if real_bands[band]['residual'] is not None and gen_bands[band]['residual'] is not None:
+            real_residual = real_bands[band]['residual']
+            gen_residual = gen_bands[band]['residual']
             
             # Resize residuals to common size for correlation calculation
             common_size = min(real_residual.shape[0], gen_residual.shape[0])
@@ -879,8 +847,8 @@ def main():
     print("Analyzing frequency bands...")
     
     # Analyze frequency bands with correct patch grids and original images for residual analysis
-    real_bands, real_full_recon = analyze_frequency_bands(real_eigenvals, real_eigenvecs, real_gray.shape, real_patch_grid, original_image=real_gray)
-    gen_bands, gen_full_recon = analyze_frequency_bands(gen_eigenvals, gen_eigenvecs, gen_gray.shape, gen_patch_grid, original_image=gen_gray)
+    real_bands = analyze_frequency_bands(real_eigenvals, real_eigenvecs, real_gray.shape, real_patch_grid, original_image=real_gray)
+    gen_bands = analyze_frequency_bands(gen_eigenvals, gen_eigenvecs, gen_gray.shape, gen_patch_grid, original_image=gen_gray)
     
     print("Creating and saving visualizations...")
     
@@ -900,7 +868,7 @@ def main():
     save_frequency_energy_plot(real_eigenvals, gen_eigenvals, output_dir)
     
     # Save new residual and evaluation visualizations
-    save_residual_analysis(real_bands, gen_bands, real_full_recon, gen_full_recon, output_dir)
+    save_residual_analysis(real_bands, gen_bands, real_gray, gen_gray, output_dir)
     save_evaluation_metrics_plot(metrics, output_dir)
     
     # Print quantitative analysis
